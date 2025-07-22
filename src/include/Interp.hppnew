@@ -1,0 +1,649 @@
+#include <chrono>
+#include <cusparse.h>
+#include <thrust/device_vector.h>
+#include <thrust/adjacent_difference.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <nccl.h>
+#include "MPIWrapper.hpp"
+#define TGET(x,i) thrust::get<i>(x)
+template <typename Func,typename...Arg>
+__host__ __device__
+auto apply(Func func, Arg... args) {
+  return func(args...);
+}
+
+// ----------------- 
+// |       |       |
+// |   3   |   2   |
+// |       |       |
+// |---------------|
+// |       |       |
+// |   0   |   1   |
+// |       |       |
+// -----------------
+
+
+template <std::size_t i>
+struct index_of_each_node;
+
+template <std::size_t i>
+struct weight_to_each_node;
+
+
+template<>
+struct index_of_each_node<0> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+idx[1]*ng[0]+idx[2]*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else if constexpr (idx.size()==2)
+      return std::min(static_cast<idx_type>(idx[0]+idx[1]*ng[0]), ng[0]*ng[1]);
+    else if constexpr (idx.size()==1)
+      return std::min(static_cast<idx_type>(idx[0]),ng[0]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<0> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (1.0-wei[0])*(1.0-wei[1])*(1.0-wei[2]);
+    else if constexpr (wei.size()==2)
+      return (1.0-wei[0])*(1.0-wei[1]);
+    else if constexpr (wei.size()==1)
+      return (1.0-wei[0]);
+    else {}
+  }
+
+};
+
+
+template<>
+struct index_of_each_node<1> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+1+idx[1]*ng[0]+idx[2]*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else if constexpr (idx.size()==2)
+      return std::min(static_cast<idx_type>(idx[0]+1+idx[1]*ng[0]), ng[0]*ng[1]);
+    else if constexpr (idx.size()==1)
+      return std::min(static_cast<idx_type>(idx[0]+1),ng[0]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<1> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return wei[0]*(1.0-wei[1])*(1.0-wei[2]);
+    else if constexpr (wei.size()==2)
+      return wei[0]*(1.0-wei[1]);
+    else if constexpr (wei.size()==1)
+      return wei[0];
+    else {}
+  }
+
+};
+
+template<>
+struct index_of_each_node<2> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+1+(idx[1]+1)*ng[0]+idx[2]*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else if constexpr (idx.size()==2)
+      return std::min(static_cast<idx_type>(idx[0]+1+(idx[1]+1)*ng[0]), ng[0]*ng[1]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<2> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (wei[0])*(wei[1])*(1.0-wei[2]);
+    else if constexpr (wei.size()==2)
+      return (wei[0])*(wei[1]);
+    else {}
+  }
+};
+
+template<>
+struct index_of_each_node<3> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+(idx[1]+1)*ng[0]+idx[2]*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else if constexpr (idx.size()==2)
+      return std::min(static_cast<idx_type>(idx[0]+(idx[1]+1)*ng[0]), ng[0]*ng[1]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<3> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (1.0-wei[0])*(wei[1])*(1.0-wei[2]);
+    else if constexpr (wei.size()==2)
+      return (1.0-wei[0])*(wei[1]);
+    else {}
+  }
+};
+
+
+template<>
+struct index_of_each_node<4> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+idx[1]*ng[0]+(idx[2]+1)*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<4> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (1.0-wei[0])*(1.0-wei[1])*wei[2];
+    else {}
+  }
+
+};
+
+
+template<>
+struct index_of_each_node<5> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+1+idx[1]*ng[0]+(idx[2]+1)*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<5> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return wei[0]*(1.0-wei[1])*wei[2];
+    else if constexpr (wei.size()==2)
+      return wei[0]*(1.0-wei[1]);
+    else {}
+  }
+
+};
+
+
+template<>
+struct index_of_each_node<6> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+1+(idx[1]+1)*ng[0]+(idx[2]+1)*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<6> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (wei[0])*(wei[1])*wei[2];
+    else {}
+  }
+};
+
+template<>
+struct index_of_each_node<7> {
+
+  template <typename Array1,typename Array2>
+  __host__ __device__
+  auto operator()(Array1 idx,Array2 ng) {
+    using idx_type = decltype(ng)::value_type;
+    if constexpr (idx.size()==3)
+      return std::min(static_cast<idx_type>(idx[0]+(idx[1]+1)*ng[0]+(idx[2]+1)*ng[1]*ng[0]),
+                 ng[0]*ng[1]*ng[2]);
+    else {}
+  }
+};
+
+template<>
+struct weight_to_each_node<7> {
+  
+  template <typename Array>
+  __host__ __device__
+  auto operator()(Array wei) {
+    if constexpr (wei.size()==3)
+      return (1.0-wei[0])*(wei[1])*wei[2];
+    else {}
+  }
+};
+
+template <typename val_type, typename idx_type, std::size_t xdim>
+struct tupleTraits;
+
+template <typename val_type, typename idx_type>
+struct tupleTraits<val_type,idx_type,1> {
+
+  using ValItor  = thrust::device_vector<val_type>::iterator;
+  using IdxItor  = thrust::device_vector<idx_type>::iterator;
+
+  using ParticleZipItor = thrust::zip_iterator<thrust::tuple<ValItor>>;
+  using IndexZipItor    = thrust::zip_iterator<thrust::tuple<IdxItor,IdxItor>>;
+  using WeightZipItor   = thrust::zip_iterator<thrust::tuple<ValItor,ValItor>>;
+  using IntpZipItor     = thrust::zip_iterator<
+                            thrust::tuple<ParticleZipItor,IndexZipItor,WeightZipItor>>;
+
+  using ParticleTupleRef = thrust::detail::
+                             tuple_of_iterator_references<val_type&>;
+  using IndexTupleRef    = thrust::detail::
+                             tuple_of_iterator_references<
+                               idx_type&,idx_type&>;
+  using WeightTupleRef   = thrust::detail::
+                             tuple_of_iterator_references<
+                               val_type&,val_type&>;
+  using IntpTupleRef     = thrust::detail::
+                             tuple_of_iterator_references
+                               <ParticleTupleRef,IndexTupleRef,WeightTupleRef>;
+};
+
+
+template <typename val_type, typename idx_type>
+struct tupleTraits<val_type,idx_type,2> {
+
+  using ValItor  = thrust::device_vector<val_type>::iterator;
+  using IdxItor  = thrust::device_vector<idx_type>::iterator;
+
+  using ParticleZipItor = thrust::zip_iterator<thrust::tuple<ValItor,ValItor>>;
+  using IndexZipItor    = thrust::zip_iterator<thrust::tuple<IdxItor,IdxItor,
+                                                             IdxItor,IdxItor>>;
+  using WeightZipItor   = thrust::zip_iterator<thrust::tuple<ValItor,ValItor,
+                                                             ValItor,ValItor>>;
+  using IntpZipItor     = thrust::zip_iterator<
+                          thrust::tuple<ParticleZipItor,IndexZipItor,WeightZipItor>>;
+
+  using ParticleTupleRef = thrust::detail::
+                      tuple_of_iterator_references<
+                      val_type&,val_type&>;
+  using WeightTupleRef = thrust::detail::
+                       tuple_of_iterator_references<
+                       val_type&,val_type&,val_type&,val_type&>;
+
+
+  using IndexTupleRef = thrust::detail::
+                       tuple_of_iterator_references<
+                       idx_type&,idx_type&,idx_type&,idx_type&>;
+ 
+  using IntpTupleRef = thrust::detail::
+                            tuple_of_iterator_references
+                            <ParticleTupleRef,IndexTupleRef,WeightTupleRef>;
+};
+
+template <typename val_type, typename idx_type>
+struct tupleTraits<val_type,idx_type,3> {
+
+  using ValItor  = thrust::device_vector<val_type>::iterator;
+  using IdxItor  = thrust::device_vector<idx_type>::iterator;
+
+  using ParticleZipItor = thrust::zip_iterator<thrust::tuple<ValItor,ValItor,ValItor>>;
+  using IndexZipItor    = thrust::zip_iterator<thrust::tuple<IdxItor,IdxItor,
+                                                             IdxItor,IdxItor, 
+                                                             IdxItor,IdxItor,
+                                                             IdxItor,IdxItor>>;
+  using WeightZipItor   = thrust::zip_iterator<thrust::tuple<ValItor,ValItor,
+                                                             ValItor,ValItor,
+                                                             ValItor,ValItor,
+                                                             ValItor,ValItor>>;
+  using IntpZipItor     = thrust::zip_iterator<
+                          thrust::tuple<ParticleZipItor,IndexZipItor,WeightZipItor>>;
+
+  using ParticleTupleRef = thrust::detail::
+                             tuple_of_iterator_references<
+                               val_type&,val_type&,val_type&>;
+  using IndexTupleRef = thrust::detail::
+                          tuple_of_iterator_references<
+                            idx_type&,idx_type&,idx_type&,idx_type&,
+                              idx_type&,idx_type&,idx_type&,idx_type&>;
+  using WeightTupleRef = thrust::detail::
+                           tuple_of_iterator_references<
+                             val_type&,val_type&,val_type&,val_type&,
+                               val_type&,val_type&,val_type&,val_type&>;
+  using IntpTupleRef = thrust::detail::
+                        tuple_of_iterator_references
+                          <ParticleTupleRef,IndexTupleRef,WeightTupleRef>;
+};
+
+
+template <typename idx_type>
+struct cusparseIndexTypeTraits {
+  static constexpr cusparseIndexType_t type() {
+    if constexpr (sizeof(idx_type)==4)
+      return CUSPARSE_INDEX_32I;
+    else if  (sizeof(idx_type)==8)
+      return CUSPARSE_INDEX_64I;
+  }
+};
+
+
+template <typename val_type>
+struct cudaDataTypeTraits {
+  static constexpr cudaDataType_t type() {
+    if constexpr (sizeof(val_type)==4)
+      return CUDA_R_32F;
+    else if  (sizeof(val_type)==8)
+      return CUDA_R_64F;
+  }
+};
+
+template <typename idx_type>
+constexpr idx_type static_pow(idx_type val,std::size_t n) {
+  return  (n==0) ? 1 : (val*static_pow(val,n-1));
+}
+
+
+template <typename idx_type, typename val_type, std::size_t xdim>
+struct calVal {
+
+  using ParticleTupleRef = typename tupleTraits<val_type,idx_type,xdim>::ParticleTupleRef;
+  using IntpTupleRef     = typename tupleTraits<val_type,idx_type,xdim>::IntpTupleRef;
+  using WeightTupleRef   = typename tupleTraits<val_type,idx_type,xdim>::WeightTupleRef;
+
+  std::array<val_type,xdim> x0,dx; 
+  std::array<idx_type,xdim> ng;
+
+  __host__ __device__
+  calVal(std::array<val_type,xdim> x0,
+         std::array<val_type,xdim> dx,
+         std::array<idx_type,xdim> ng) 
+  : x0(x0),dx(dx),ng(ng) {}
+
+
+  template <std::size_t...idx>
+  __host__ __device__
+  auto calIndex(std::index_sequence<idx...>, 
+                std::array<val_type,xdim> index,
+                std::array<idx_type,xdim> ng) {
+    // 计算每个节点(1d->2/2d->4/3d->8)在一维内存中的索引(即插值矩阵的非0行标)
+    return thrust::make_tuple(::apply(index_of_each_node<idx>(),index,ng)...);
+  }
+
+  template <std::size_t...idx>
+  __host__ __device__
+  auto calWeight(std::index_sequence<idx...>, 
+                 std::array<val_type,xdim> wei) {
+    return thrust::make_tuple(::apply(weight_to_each_node<idx>(),wei)...);
+  }
+
+  __host__ __device__
+  void operator()(IntpTupleRef t)  {
+
+    std::array<val_type,xdim> idx,wei;
+      
+    // 注意ghost网格带来的偏移
+    wei[0] = std::modf((TGET(TGET(t,0/*particle*/),0)-x0[0]+dx[0])/dx[0],idx.data());
+    if constexpr (xdim>1)
+      wei[1] = std::modf((TGET(TGET(t,0),1)-x0[1])/dx[1],idx.data()+1);
+    if constexpr (xdim>2) 
+      wei[2] = std::modf((TGET(TGET(t,0),2)-x0[2])/dx[2],idx.data()+2);
+      
+    constexpr std::size_t num_nodes = static_pow(2,xdim);
+    TGET(t,1/*index*/)  = calIndex (std::make_index_sequence<num_nodes>{},idx,ng);
+    TGET(t,2/*weight*/) = calWeight(std::make_index_sequence<num_nodes>{},wei);
+
+  }
+
+};
+
+
+
+template <typename val_type>
+struct Y_AX {
+  cudaDataType_t cudaDataType 
+    = cudaDataTypeTraits<val_type>::type();
+  cusparseIndexType_t cusparseIndexType 
+    = cusparseIndexTypeTraits<std::size_t>::type(); 
+
+  cusparseSpMatDescr_t matA;
+  cusparseDnVecDescr_t X,Y;
+  cusparseHandle_t     handle     = NULL;
+  cusparseOperation_t  cuspOp;
+  void*                dBuffer    = NULL;
+  size_t               bufferSize = 0;
+  const val_type       alpha = 1., beta = 0.;
+
+  bool transpose;
+  Y_AX(bool transpose) : transpose(transpose) {
+    if (transpose)
+      cuspOp = CUSPARSE_OPERATION_TRANSPOSE;
+    else
+      cuspOp = CUSPARSE_OPERATION_NON_TRANSPOSE;
+  }
+  template <typename Triplet>
+  void operator()(Triplet& tri, std::size_t n_cols, std::size_t n_rows, 
+                  std::size_t n_nz, val_type* dX, val_type* dY) {
+    cusparseCreate(&handle);
+    cusparseCreateCoo(&matA, n_cols, n_rows, n_nz,
+                      thrust::raw_pointer_cast(thrust::get<0>(tri)),
+                      thrust::raw_pointer_cast(thrust::get<1>(tri)),
+                      thrust::raw_pointer_cast(thrust::get<2>(tri)),
+                      cusparseIndexType,
+                      CUSPARSE_INDEX_BASE_ZERO,
+                      cudaDataType);
+    std::size_t nX = transpose? n_cols : n_rows;
+    std::size_t nY = transpose? n_rows : n_cols;
+    cusparseCreateDnVec(&X, nX, dX, cudaDataType);
+    cusparseCreateDnVec(&Y, nY, dY, cudaDataType);
+    cusparseSpMV_bufferSize(handle,cuspOp,
+                            &alpha,matA,X,
+                            &beta,      Y, cudaDataType,
+                            CUSPARSE_SPMV_ALG_DEFAULT,&bufferSize);
+    cudaMalloc(&dBuffer,bufferSize); 
+    cusparseSpMV(handle,cuspOp,
+                 &alpha,matA,X,
+                 &beta,      Y,cudaDataType,
+                 CUSPARSE_SPMV_ALG_DEFAULT,dBuffer);
+  }
+};
+
+template<typename PIC>
+struct Interp {
+
+  using Container  = typename PIC::ParticleContainer;
+  using idx_type   = std::size_t;
+  using val_type   = PIC::value_type;
+  using Species    = PIC::Species;
+  using Cell       = PIC::Cell;
+  static constexpr std::size_t n_species = PIC::n_species, 
+                                   dim_x = PIC::dim_x, 
+                                   dim_v = PIC::dim_v;
+
+  thrust::device_vector<idx_type> A_rows, A_cols;
+  thrust::device_vector<val_type> A_vals;
+        
+  using ParticleZipItor = tupleTraits<val_type,idx_type,dim_x>::ParticleZipItor;
+  using IndexZipItor    = tupleTraits<val_type,idx_type,dim_x>::IndexZipItor;
+  using WeightZipItor   = tupleTraits<val_type,idx_type,dim_x>::WeightZipItor;
+  using IntpZipItor     = thrust::zip_iterator<
+                          thrust::tuple<ParticleZipItor,IndexZipItor,WeightZipItor>>;
+
+  ParticleZipItor z_itor_par;
+  IndexZipItor    z_itor_col;
+  WeightZipItor   z_itor_val;
+  IntpZipItor     z_itor_pcv;
+
+  idx_type n_rows, n_cols, n_nz;    
+  std::size_t shift[s];
+
+  Interp(Cell& cell) : ng1(cell.ng1) { }
+
+  void calWeight(Species& sp, Cell& cell) {
+
+    idx_type dot = std::pow(2,dim_x);
+    int np_tot = 0;
+    for (int s=0; s<n_species; ++s) np_tot += sp[s].np;
+
+    n_rows = cell.ng1;
+    n_cols = np_tot;
+    n_nz   = np_tot*dot;
+    A_rows.resize(n_nz); A_cols.resize(n_nz); A_vals.resize(n_nz);
+
+    for (int s=0; s<n_species; ++s) {
+
+      // prepare to assemble the sparse matrix (i,j,val)
+      // 23dimension todo
+      z_itor_par = thrust::make_zip_iterator(sp[s].x[0].begin());
+
+      shift[s] = s==0? 0; sp[s-1].np;
+      z_itor_col = thrust::make_zip_iterator(A_cols.begin()+shift,
+                                             A_cols.begin()+shift+sp[s].np);
+      z_itor_val = thrust::make_zip_iterator(A_vals.begin()+shift,
+                                             A_vals.begin()+shift+sp[s].np);
+      z_itor_pcv = thrust::make_zip_iterator(z_itor_par,z_itor_col,z_itor_val);
+      // from particle position to calculate the index: A_cols, 
+      // and the cooresponding weight: A_vals
+      thrust::for_each(z_itor_pcv,z_itor_pcv+sp[s].np,calVal(cell.a,cell.h,cell.ng_al));
+      
+    }
+
+    // index of particles: A_rows
+    // cuSPARSE requires that A_rows must be sorted.
+    thrust::transform(thrust::make_counting_iterator((idx_type)0),
+                      thrust::make_counting_iterator(n_nz),
+                      A_rows.begin(),[dot]__host__ __device__(idx_type idx) 
+                      { return idx/dot; });
+  }
+  void particle2cell(Species& sp, Cell& cell) {
+
+    thrust::device_vector<val_type> qws(n_cols);
+    for (int s=0; s<n_species; ++s) 
+      val_type qw = sp.species[s].q *sp.species[s].w;
+      thrust::fill(qwes.begin()+shift[s],
+                   qwes.begin()+shift[s]+sp[s].np, qw);
+    }
+    Y_AX<val_type> Mat(true);
+
+    auto MatTri = 
+        thrust::make_tuple(
+                      thrust::raw_pointer_cast(A_rows.data()),
+                      thrust::raw_pointer_cast(A_cols.data()),
+                      thrust::raw_pointer_cast(A_vals.data()));
+    Mat(MatTri, n_cols,n_rows,n_nz, 
+        thrust::raw_pointer_cast(ones.data()),
+        thrust::raw_pointer_cast(cell.eden.data()));
+    for (int d=0; d<dim_v; d++) {
+      Mat(MatTri, n_cols,n_rows,n_nz, 
+          thrust::raw_pointer_cast(sp[s].v[d].data()),
+          thrust::raw_pointer_cast(cell.jfield[d].data()));
+      // 乘上电荷以及粒子权重
+      thrust::for_each(cell.jfield[d].begin(),cell.jfield[d].end(),
+                       [qw]__host__ __device__(val_type& val) { val *= qw; });
+
+    }
+
+  }
+
+  void cell2particle(Species& sp, Cell& cell) {
+
+    thrust::device_vector<val_type> buf(cell.ng1+1);
+
+      Y_AX<val_type> Mat(false);
+      auto MatTri = 
+          thrust::make_tuple(
+                        thrust::raw_pointer_cast(A_rows.data()),
+                        thrust::raw_pointer_cast(A_cols.data()),
+                        thrust::raw_pointer_cast(A_vals.data()));
+      // Yee cell Bx
+      thrust::adjacent_difference(cell.bfield[0].begin(),cell.bfield[0].end(),
+                                  buf.begin(),thrust::plus<val_type>());
+      thrust::for_each(buf.begin(),buf.end(),
+                       []__host__ __device__ (val_type& x){ x *=.5; });
+      buf[1] = buf[cell.ng1-2];
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(buf.data()+1),
+          thrust::raw_pointer_cast(sp[s].B[0].data()));
+      // Yee cell Ey
+      thrust::adjacent_difference(cell.efield[1].begin(),cell.efield[1].end(),
+                                  buf.begin(),thrust::plus<val_type>());
+      thrust::for_each(buf.begin(),buf.end(),
+                       []__host__ __device__ (val_type& x){ x *=.5; });
+      buf[1] = buf[cell.ng1-2];
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(buf.data()+1),
+          thrust::raw_pointer_cast(sp[s].E[1].data()));
+      // Yee cell Ez
+      thrust::adjacent_difference(cell.efield[2].begin(),cell.efield[2].end(),
+                                  buf.begin(),thrust::plus<val_type>());
+      thrust::for_each(buf.begin(),buf.end(),
+                       []__host__ __device__ (val_type& x){ x *=.5; });
+      buf[1] = buf[cell.ng1-2];
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(buf.data()+1),
+          thrust::raw_pointer_cast(sp[s].E[2].data()));
+
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(cell.efield[0].data()),
+          thrust::raw_pointer_cast(sp[s].E[0].data()));
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(cell.bfield[1].data()),
+          thrust::raw_pointer_cast(sp[s].B[1].data()));
+      Mat(MatTri, n_cols[s],n_rows,n_nz[s], 
+          thrust::raw_pointer_cast(cell.bfield[2].data()),
+          thrust::raw_pointer_cast(sp[s].B[2].data()));
+       
+    } // for species
+  }   
+};
