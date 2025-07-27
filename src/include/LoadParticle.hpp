@@ -23,7 +23,7 @@ struct LoadParticle {
     std::mt19937 gen(rd());
     std::uniform_real_distribution<val_type> udist(in.a[0],in.b[0]);
     //std::uniform_real_distribution<val_type> gdist(1,1.2);
-    std::normal_distribution<val_type> gdist(0.0,1);
+    std::normal_distribution<val_type> gdist(0.0,0.1);
 
     thrust::host_vector<val_type> buffer;
     for (std::size_t s=0; s<Species::n_species; ++s) {

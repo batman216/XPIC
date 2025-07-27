@@ -28,13 +28,13 @@ struct Cell {
                                 dim_x = PIC::dim_x, 
                                 dim_v = PIC::dim_v;
   // scalar fields
-  Container eden/*charge density*/, epot/* electric potential*/;
+  Container eden/*charge density*/, eden_buf, epot/* electric potential*/;
   std::array<Container,n_species> edens/*charge density of each species*/;
   std::array<val_type,dim_x> L, h, a, b, L_gl, a_gl, b_gl;
 
   idx_type ng1;
   val_type dt;
-  std::array<idx_type,dim_x> ng_al, ng_in, nl, nr;
+  std::array<idx_type,dim_x> n_cell, ng_al, ng_in, nl, nr;
   // vector fields
   std::array<Container,dim_v> efield, bfield, jfield;
   std::array<std::array<Container,dim_v>,n_species> jsfield;

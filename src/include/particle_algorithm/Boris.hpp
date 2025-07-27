@@ -40,14 +40,13 @@ struct Boris {
                                        sp[s].v[1].begin(),
                                        sp[s].v[2].begin());
       val_type dt = cell.dt;
-      val_type B0[3] = {0,0,0};
+      val_type B0[3] = {0,0,4.4};
       val_type E0[3] = {0,0,0};
       auto np = sp[s].v[0].size();
       auto qdm_dt = dt*sp[s].qdm*.5;
-      val_type c = PIC::Constant::c;
 
       auto vvzip = thrust::make_zip_iterator(vzip,ezip,bzip);
-      thrust::for_each(vvzip,vvzip+np,[c,qdm_dt,E0,B0]__host__ __device__(Tuple_vv t)
+      thrust::for_each(vvzip,vvzip+np,[qdm_dt,E0,B0]__host__ __device__(Tuple_vv t)
                       {
                          val_type v0[dim_v], ee[dim_v],ss[dim_v], tt[dim_v];
                          v0[0] = TGET(TGET(t,0),0)+qdm_dt*(E0[0]+TGET(TGET(t,1/*E*/),0)); 
@@ -57,9 +56,9 @@ struct Boris {
                          ee[0] = (E0[0]+TGET(TGET(t,1/*E*/),0))*qdm_dt;
                          ee[1] = (E0[1]+TGET(TGET(t,1/*E*/),1))*qdm_dt;
                          ee[2] = (E0[2]+TGET(TGET(t,1/*E*/),2))*qdm_dt;
-                         tt[0] = (B0[0]+TGET(TGET(t,2/*B*/),0))*qdm_dt/c;
-                         tt[1] = (B0[1]+TGET(TGET(t,2/*B*/),1))*qdm_dt/c;
-                         tt[2] = (B0[2]+TGET(TGET(t,2/*B*/),2))*qdm_dt/c;
+                         tt[0] = (B0[0]+TGET(TGET(t,2/*B*/),0))*qdm_dt;
+                         tt[1] = (B0[1]+TGET(TGET(t,2/*B*/),1))*qdm_dt;
+                         tt[2] = (B0[2]+TGET(TGET(t,2/*B*/),2))*qdm_dt;
                          
                          for (int i=0; i<3; ++i) 
                            ss[i] = 2.0*tt[i]/(1.0+tt[0]*tt[0]+tt[1]*tt[1]+tt[2]*tt[2]);

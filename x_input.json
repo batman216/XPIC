@@ -1,0 +1,18 @@
+{
+  "#cell"                    : [6000, 0, 0],
+  "#particle per cell"       : [1200, 1200],
+
+  "particle mass"            : [1, 1836.15],
+  "particle charge"          : [-1.0, 1.0],
+  "particle number density"  : [ 1.0, 1.0],
+
+  "time factor"              : 1.0,
+
+  "run steps"                : 1000,
+  "large output interval"    : 1,
+  "small output interval"    : 2,
+
+  "print efield on cell"     : 10,
+  "print bfield on cell"     : 0,
+  "print jfield on cell"     : 10
+}

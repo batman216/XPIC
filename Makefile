@@ -3,7 +3,7 @@ CXX = nvcc
 
 NVCFlAG = --expt-relaxed-constexpr --extended-lambda -arch=sm_89
 CXXFLAG = -std=c++20 -Xcompiler 
-LDFLAG  = -I${CUMATH_HOME}/include -L${CUMATH_HOME}/lib \
+LDFLAG  = -Isrc/include -I${CUMATH_HOME}/include -L${CUMATH_HOME}/lib \
 					-I${NCCL_HOME}/include -L${NCCL_HOME}/lib     \
 					-I${MPI_HOME}/include -L${MPI_HOME}/lib     \
           -lmpi -lnccl -lcusparse -lcuda -lcudart

@@ -8,6 +8,7 @@ void MemAlloc(Species& sp, Cell& ce, const Input& in) {
   ce.nl     = in.nl;
   ce.nr     = in.nr;
   ce.ng1    = in.ng1;
+  ce.n_cell = in.ncell;
 
   ce.dt  = in.dt;
 
@@ -17,6 +18,7 @@ void MemAlloc(Species& sp, Cell& ce, const Input& in) {
   ce.L      = in.L;
 
   ce.eden.resize(ce.ng1);
+  ce.eden_buf.resize(ce.ng1);
   for (int s=0; s<Species::n_species; ++s) {
     sp[s].np   = in.np[s];
     sp[s].q    = in.q[s];

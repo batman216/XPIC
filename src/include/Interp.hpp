@@ -8,6 +8,7 @@
 #include <thrust/iterator/constant_iterator.h>
 #include <nccl.h>
 #include "MPIWrapper.hpp"
+#include "XPIC_HelperFunctions.hpp"
 #include "detail/interpolation.inl"
 #include "detail/xpic_traits.hpp"
 #include "detail/index_weight.hpp"
@@ -32,14 +33,12 @@ struct calVal {
   using IntpTupleRef     = typename tupleTraits<val_type,idx_type,xdim>::IntpTupleRef;
   using WeightTupleRef   = typename tupleTraits<val_type,idx_type,xdim>::WeightTupleRef;
 
-  std::array<val_type,xdim> x0,dx;
-  std::array<idx_type,xdim> ng;
+  std::array<idx_type,xdim> ng,nl;
 
   __host__ __device__
-  calVal(const std::array<val_type,xdim>& x0,
-         const std::array<val_type,xdim>& dx,
-         const std::array<idx_type,xdim>& ng)
-  : x0(x0),dx(dx),ng(ng) {}
+  calVal(const std::array<idx_type,xdim>& ng,
+         const std::array<idx_type,xdim>& nl)
+  : ng(ng),nl(nl) {}
 
 
   template <idx_type...idx>
@@ -63,12 +62,12 @@ struct calVal {
 
     std::array<val_type,xdim> idx,wei;
 
-    // 注意ghost网格带来的偏移
-    wei[0] = std::modf((TGET(TGET(t,0/*particle*/),0)-x0[0]+dx[0])/dx[0],idx.data());
+    // 注意ghost网格带来的偏移 nl
+    wei[0] = std::modf((TGET(TGET(t,0/*particle*/),0)+nl[0]),idx.data());
     if constexpr (xdim>1)
-      wei[1] = std::modf((TGET(TGET(t,0),1)-x0[1])/dx[1],idx.data()+1);
+      wei[1] = std::modf(TGET(TGET(t,0),1),idx.data()+1);
     if constexpr (xdim>2)
-      wei[2] = std::modf((TGET(TGET(t,0),2)-x0[2])/dx[2],idx.data()+2);
+      wei[2] = std::modf(TGET(TGET(t,0),2),idx.data()+2);
 
     TGET(t,1/*index*/)  = calIndex (std::make_index_sequence<n_node>{},idx,ng);
     TGET(t,2/*weight*/) = calWeight(std::make_index_sequence<n_node>{},wei);
@@ -154,7 +153,9 @@ struct Interp {
 
   static constexpr idx_type n_node = PIC::n_node;
 
+  nccl_traits<val_type> ncclType;
   cudaStream_t cus;
+  ncclComm_t comm;
 
   std::array<thrust::device_vector<idx_type>,n_species> A_cols;
   std::array<thrust::device_vector<val_type>,n_species> A_vals, ones;
@@ -173,7 +174,7 @@ struct Interp {
   idx_type n_rows[n_species], n_cols, n_nz[n_species];
 
   template <typename MPI>
-  Interp(Cell& cell,MPI &mpi) : n_cols(cell.ng1), cus(mpi.s) {
+  Interp(Cell& cell,MPI &mpi) : n_cols(cell.ng1), cus(mpi.s), comm(mpi.comm) {
     n_cols = cell.ng1;
   }
 
@@ -202,7 +203,7 @@ struct Interp {
       // from particle position to calculate the index: A_cols,
       // and the cooresponding weight: A_vals
       thrust::for_each(z_itor_pcv,z_itor_pcv+n_rows[s],
-                       calVal<PIC>(cell.a,cell.h,cell.ng_al));
+                       calVal<PIC>(cell.ng_al,cell.nl));
 
       val_type qw = sp[s].q *sp[s].w;
       ones[s].resize(n_rows[s]);
@@ -223,7 +224,18 @@ struct Interp {
     }// for species
   }
   void particle2cell(Species& sp, Cell& cell) {
+    using namespace thrust::placeholders;
 
+    val_type nr = cell.nr[0], nl = cell.nl[0],
+             CJ = cell.h[0]/cell.dt;
+
+    thrust::copy(cell.eden.begin(),cell.eden.end(),cell.eden_buf.begin()); 
+    thrust::fill(cell.eden.begin(),cell.eden.end(),0); 
+    for (int d=0; d<dim_v; d++) 
+      thrust::fill(cell.jfield[d].begin(),cell.jfield[d].end(),0);
+    // 暂时先这样，每次都把电流插值好，算VB电流再这个覆盖掉就行了
+    
+    // charge density sum
     for (int s=0; s<n_species; ++s) {
 
       Particle2Cell<PIC> p2c(n_rows[s],n_cols);
@@ -232,15 +244,44 @@ struct Interp {
       p2c(RPC(A_cols[s]), RPC(A_vals[s]),
           RPC(ones[s]),   RPC(cell.edens[s]));
 
-      for (int d=0; d<dim_v; d++) {
+//      periodicBoundaryInterpSum(cell.edens[s],nl,nr);
+
+      thrust::transform(cell.edens[s].begin(),cell.edens[s].end(),
+                        cell.eden.begin(),cell.eden.begin(),_1+_2);
+
+    } // for species
+    ncclAllReduce(thrust::raw_pointer_cast(cell.edens[1].data()),
+                  thrust::raw_pointer_cast(cell.edens[1].data()),
+                    cell.ng1,ncclType.name,ncclSum,comm,cus);
+
+    ncclAllReduce(thrust::raw_pointer_cast(cell.eden.data()),
+                  thrust::raw_pointer_cast(cell.eden.data()),
+                    cell.ng1,ncclType.name,ncclSum,comm,cus);
+
+    periodicBoundary(cell.eden,nl,nr);
+    // current sum
+    for (int d=0; d<dim_v; d++) {
+      for (int s=0; s<n_species; s++) {
+        Particle2Cell<PIC> p2c(n_rows[s],n_cols);
         p2c(RPC(A_cols[s]),  RPC(A_vals[s]),
             RPC(sp[s].v[d]), RPC(cell.jsfield[s][d]));
 
         // 乘上电荷以及粒子权重
+        val_type qw = sp[s].q *sp[s].w;
         thrust::for_each(cell.jsfield[s][d].begin(),cell.jsfield[s][d].end(),
                          [qw]__host__ __device__(val_type& val) { val *= qw; });
-      }
-    } // for species
+        periodicBoundaryInterpSum(cell.jsfield[s][d],nl,nr);
+        thrust::transform(cell.jsfield[s][d].begin(),cell.jsfield[s][d].end(),
+                          cell.jfield[d].begin(),    cell.jfield[d].begin(),
+                          thrust::placeholders::_1+thrust::placeholders::_2);
+      } // for species
+
+      ncclAllReduce(thrust::raw_pointer_cast(cell.jfield[d].data()),
+                    thrust::raw_pointer_cast(cell.jfield[d].data()),
+                    cell.ng1,ncclType.name,ncclSum,comm,cus); 
+      periodicBoundary(cell.jfield[d],nl,nr);
+    } // for dim_v
+
   }
 
 
@@ -250,9 +291,9 @@ struct Interp {
     for (int s=0; s<n_species; ++s) {
 
       Cell2Particle<PIC> c2p(n_rows[s]);
-      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(buf)+1, RPC(sp[s].B[0]));
-      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(buf)+1,RPC(sp[s].E[1]));
-      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(buf)+1, RPC(sp[s].E[2]));
+      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.bfield[0]), RPC(sp[s].B[0]));
+      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.efield[1]), RPC(sp[s].E[1]));
+      c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.efield[2]), RPC(sp[s].E[2]));
       c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.efield[0]), RPC(sp[s].E[0]));
       c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.bfield[1]), RPC(sp[s].B[1]));
       c2p(RPC(A_cols[s]), RPC(A_vals[s]), RPC(cell.bfield[2]), RPC(sp[s].B[2]));

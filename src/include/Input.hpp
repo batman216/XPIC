@@ -1,3 +1,7 @@
+#pragma once
+#include <iostream>
+#include <fstream>
+#include "nlohmann/json.hpp"
 
 template <typename PIC, typename MPI>
 struct Input {
@@ -18,32 +22,50 @@ struct Input {
   std::array<idx_type,dim_x> nl, nr, ng_in, ng, ncell;
   std::array<idx_type,n_species> np_per_cell, np;
   std::array<val_type,n_species> n0, q, m, weight;
-  
+
+  std::size_t stopat, out_interval_1, out_interval_2;
+
+  std::size_t out_ef, out_bf, out_jf;
+  std::array<std::size_t,n_species> out_px, out_pv, out_pef;
+
+  using json = nlohmann::json;
 
   val_type time_factor, dt;
 
   Input(const MPI& mpi) {
     
-    time_factor = 0.2;
+    std::ifstream input_file("x_input.json");
+    json input = json::parse(input_file);
 
-    m[0] = 1;    q[0] = -1;
-    m[1] = 1836; q[1] = 1;
-    //m[2] = 1836; q[2] = 1;
-    np_per_cell[0] = 1200;
-    np_per_cell[1] = 1200;
-    //np_per_cell[2] = 1200;
+    for (int d=0; d<dim_x; ++d)
+      ncell_gl[d] = input["#cell"][d];
+  
+    for (int s=0; s<n_species; ++s) {
+      np_per_cell[s] = input["#particle per cell"][s];
+      m[s]           = input["particle mass"][s];
+      q[s]           = input["particle charge"][s];
+      n0[s]          = input["particle number density"][s];
+    }
+      
+    dt = input["time factor"];
 
-    n0[0] = 1;
-    n0[1] = 1;
-    //n0[2] = 1;
+    out_interval_1 = input["large output interval"];
+    out_interval_2 = input["small output interval"];
 
-    a_gl[0]     = 0;
-    L_gl[0]     = 1200;
-    b_gl[0]     = a_gl[0] + L_gl[0];
-    ncell_gl[0] = 6000;
-    h[0]        = L_gl[0]/ncell_gl[0];
+    out_px  = input["print particle x"];
+    out_pv  = input["print particle v"];
+    out_pef = input["print efield on particle"];
 
-    L[0] = L_gl[0] / (PIC::DVD ? mpi.world_size : 1);
+    out_ef = input["print efield on cell"];
+    out_bf = input["print bfield on cell"];
+    out_jf = input["print jfield on cell"];
+
+    stopat = input["run steps"];
+    
+    a_gl[0]     = 0.0;
+    b_gl[0]     = static_cast<val_type>(ncell_gl[0]);
+
+    L[0] = static_cast<val_type>(ncell_gl[0]) / (PIC::DVD ? mpi.world_size : 1);
     a[0] = PIC::DVD ? L[0]*mpi.world_rank : a_gl[0];
     b[0] = a[0] + L[0];
     nr[0] = 2; nl[0] = 2;
@@ -53,13 +75,11 @@ struct Input {
     ng[0]    = ng_in[0] + nr[0] + nl[0];
     ng1      = ng[0];
 
-
     for (int s=0; s<n_species; ++s) {
       np[s] = ncell_gl[0]*np_per_cell[s]/mpi.world_size;
       weight[s] = n0[s] / np_per_cell[s];
     }
     
-    dt = h[0]/Const::c*time_factor;
   }
 
 
