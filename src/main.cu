@@ -26,7 +26,7 @@ int main(/*Tian-Xing Hu*/) {
 
 //  setInitField(cell.efield[2],cell.ng1);
   Maxwell<PIC> maxwell(cell,mpi);
-  maxwell(cell);
+//  maxwell(cell);
   interp.cell2particle(species,cell);
 
   Boris<PIC> push;

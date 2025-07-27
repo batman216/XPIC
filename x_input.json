@@ -14,5 +14,8 @@
 
   "print efield on cell"     : 10,
   "print bfield on cell"     : 0,
-  "print jfield on cell"     : 10
+  "print jfield on cell"     : 10,
+  "print efield on particle" : [200,0],
+  "print particle x"         : [200,0],
+  "print particle v"         : [200,0]
 }

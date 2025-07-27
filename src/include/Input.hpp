@@ -45,16 +45,16 @@ struct Input {
       m[s]           = input["particle mass"][s];
       q[s]           = input["particle charge"][s];
       n0[s]          = input["particle number density"][s];
+      out_px[s]      = input["print particle x"][s];
+      out_pv[s]      = input["print particle v"][s];
+      out_pef[s]     = input["print efield on particle"][s];
+
     }
       
     dt = input["time factor"];
 
     out_interval_1 = input["large output interval"];
     out_interval_2 = input["small output interval"];
-
-    out_px  = input["print particle x"];
-    out_pv  = input["print particle v"];
-    out_pef = input["print efield on particle"];
 
     out_ef = input["print efield on cell"];
     out_bf = input["print bfield on cell"];

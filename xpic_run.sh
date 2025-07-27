@@ -3,7 +3,7 @@
 NSYS=0
 EXEC=bld/xpic
 ARGS=()
-NP=$1
+NP=${1:-1}
 if [ "$2" == "--nsys" ]; then
   NSYS=1
 fi
